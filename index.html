@@ -310,6 +310,19 @@
   .item .tags span.sea{ color:#0d5c63; background: rgba(13,92,99,0.09); }
   .item .tags span.air{ color:#8a4b00; background: rgba(232,98,44,0.12); }
 
+  .variant-select{
+    display:block;
+    margin: 4px 0 10px;
+    padding: 7px 10px;
+    font-size: 13px;
+    font-family: inherit;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: #fff;
+    color: var(--ink);
+    max-width: 280px;
+  }
+
   .item .buy{
     text-align:right;
     display:flex;
@@ -463,7 +476,7 @@
    doesn't matter, nothing else needs to change.
 
    ORDER OF VALUES:
-   CODE | Name | Short description | Cost you pay (GHS) | Margin % | ship (sea/air) | image links separated by commas
+   CODE | Name | Short description | Cost you pay (GHS) | Margin % | ship (sea/air) | image links separated by commas | Variant (optional)
 
    - Cost: what you actually pay, landed. Never shown to customers.
    - Margin: your %. 30 means the sale price is cost + 30%. Set it
@@ -472,8 +485,21 @@
      it, "Copy image address", paste the link here. Add 2-3 separated
      by commas and they'll auto-rotate on the card. Leave blank for none.
 
-   EXAMPLE — copy this line and edit it to add a new product:
-   KD-004 | Rechargeable neck fan | Foldable, USB charging | 60 | 35 | sea | https://i.imgur.com/abc.jpg,https://i.imgur.com/def.jpg
+   VARIANTS — for one product that comes in different styles/versions
+   at different prices (e.g. a shaker cup with 5 different lid types):
+   Give each style its OWN line, with the SAME Name, and add a short
+   Variant label as the 8th field. Lines sharing the same Name become
+   ONE card on the site with a style picker — customers choose, the
+   price and order message update automatically. Leave the Variant
+   field blank (or leave it off entirely) for a normal single product.
+
+   EXAMPLE — normal product, no variants:
+   KD-004 | Rechargeable neck fan | Foldable, USB charging | 60 | 35 | sea | https://i.imgur.com/abc.jpg
+
+   EXAMPLE — one product, five variants (same Name, different Variant label):
+   KD-005A | Shaker Cup | Protein shaker with mixing compartment. | 12 | 40 | sea | | Stirring Ball
+   KD-005B | Shaker Cup | Protein shaker with mixing compartment. | 15 | 40 | sea | | Bucket-Shaped Toner
+   KD-005C | Shaker Cup | Protein shaker with mixing compartment. | 18 | 40 | sea | | 3-Layer Powder Box
 ============================================================ */
 const DEPOSIT_TERMS = "100% due to order";
 
@@ -481,6 +507,9 @@ const PRODUCTS_TEXT = `
 KD-001 | Multi-functional push-up board | English-labeled, with resistance bands and ab roller included. | 115 | 30 | sea |
 KD-002 | Foldable aluminium laptop stand | Adjustable height, ergonomic, folds flat for hostel storage. | 100 | 25 | air |
 KD-003 | Heavy-duty lifting straps | Padded wrist support, non-slip grip. | 46 | 45 | sea |
+KD-005A | Shaker Cup | Protein shaker, choose your style below. | 12 | 30 | sea | | Stirring Ball
+KD-005B | Shaker Cup | Protein shaker, choose your style below. | 15 | 30 | sea | | Bucket-Shaped Toner
+KD-005C | Shaker Cup | Protein shaker, choose your style below. | 18 | 30 | sea | | 3-Layer Powder Box
 `;
 
 function parseProducts(text){
@@ -491,7 +520,7 @@ function parseProducts(text){
     .filter(line => line.length > 0)
     .map(line => {
       const parts = line.split("|").map(s => s.trim());
-      const [code, name, desc, cost, margin, ship, imagesRaw] = parts;
+      const [code, name, desc, cost, margin, ship, imagesRaw, variant] = parts;
       const images = (imagesRaw || "")
         .split(",")
         .map(s => s.trim())
@@ -503,67 +532,116 @@ function parseProducts(text){
         cost: parseFloat(cost) || 0,
         margin: parseFloat(margin) || 0,
         ship: (ship || "sea").toLowerCase() === "air" ? "air" : "sea",
-        images
+        images,
+        variant: (variant || "").trim()
       };
     });
 }
 
 const PRODUCTS = parseProducts(PRODUCTS_TEXT);
 
+// group lines that share a Name AND have a Variant label into one card each
+function groupProducts(list){
+  const groups = [];
+  const byName = {};
+  list.forEach(p => {
+    if (p.variant){
+      if (!byName[p.name]) {
+        byName[p.name] = { name: p.name, ship: p.ship, desc: p.desc, items: [] };
+        groups.push(byName[p.name]);
+      }
+      byName[p.name].items.push(p);
+    } else {
+      groups.push({ name: p.name, ship: p.ship, desc: p.desc, items: [p] });
+    }
+  });
+  return groups;
+}
+
 function priceOf(p){
   return Math.ceil(p.cost * (1 + p.margin / 100));
 }
 
 function waLink(product){
-  const msg = `Hi! I'd like to order: ${product.name} (${product.code}) — GHS ${priceOf(product)}`;
+  const label = product.variant ? `${product.name} — ${product.variant}` : product.name;
+  const msg = `Hi! I'd like to order: ${label} (${product.code}) — GHS ${priceOf(product)}`;
   return `https://wa.me/233551301022?text=${encodeURIComponent(msg)}`;
 }
 
 const rotators = [];
+const variantHandlers = {};
 
 function renderCatalog(){
   rotators.forEach(t => clearInterval(t));
   rotators.length = 0;
 
-  const list = PRODUCTS;
-  document.getElementById("itemCount").textContent = `${list.length} item${list.length === 1 ? "" : "s"}`;
+  const groups = groupProducts(PRODUCTS);
+  const totalItems = groups.reduce((sum, g) => sum + g.items.length, 0);
+  document.getElementById("itemCount").textContent = `${totalItems} item${totalItems === 1 ? "" : "s"}`;
 
   const wrap = document.getElementById("catalog");
   wrap.innerHTML = "";
 
-  list.forEach((p, idx) => {
+  groups.forEach((g, gIdx) => {
+    const hasVariants = g.items.length > 1;
+    const groupId = `g${gIdx}`;
+    let activeIdx = 0;
+    let active = g.items[activeIdx];
+
     const el = document.createElement("div");
     el.className = "item";
-    const thumbId = `thumb-${idx}-${p.code}`;
-    const firstImg = p.images && p.images.length ? p.images[0] : "";
+    const thumbId = `thumb-${groupId}`;
+
+    const variantPicker = hasVariants ? `
+      <select class="variant-select" id="select-${groupId}" onchange="variantHandlers['${groupId}'](this.value)">
+        ${g.items.map((it, i) => `<option value="${i}">${it.variant} — GHS ${priceOf(it)}</option>`).join("")}
+      </select>` : "";
+
+    const firstImg = active.images && active.images.length ? active.images[0] : "";
     el.innerHTML = `
-      <div class="thumb" id="${thumbId}" style="${firstImg ? `background-image:url('${firstImg}')` : ""}" onclick="openLightbox('${p.code}')">
-        <span class="code">${p.code}</span>
+      <div class="thumb" id="${thumbId}" style="${firstImg ? `background-image:url('${firstImg}')` : ""}">
+        <span class="code" id="code-${groupId}">${active.code}</span>
       </div>
       <div class="info">
-        <h3>${p.name}</h3>
-        <p>${p.desc}</p>
+        <h3>${g.name}</h3>
+        <p>${g.desc}</p>
+        ${variantPicker}
         <div class="tags">
-          <span class="${p.ship}">${p.ship === "sea" ? "Sea · 30–45 days" : "Air · 10–14 days"}</span>
+          <span class="${g.ship}">${g.ship === "sea" ? "Sea · 30–45 days" : "Air · 10–14 days"}</span>
         </div>
       </div>
       <div class="buy">
-        <div class="price">GHS ${priceOf(p)}</div>
+        <div class="price" id="price-${groupId}">GHS ${priceOf(active)}</div>
         <div class="deposit">${DEPOSIT_TERMS}</div>
-        <a class="order-btn" href="${waLink(p)}" target="_blank" rel="noopener">Order on WhatsApp</a>
+        <a class="order-btn" id="wa-${groupId}" href="${waLink(active)}" target="_blank" rel="noopener">Order on WhatsApp</a>
       </div>
     `;
     wrap.appendChild(el);
 
-    // rotate through photos if more than one was given
-    if (p.images && p.images.length > 1){
-      let i = 0;
-      const t = setInterval(() => {
-        i = (i + 1) % p.images.length;
-        const thumb = document.getElementById(thumbId);
-        if (thumb) thumb.style.backgroundImage = `url('${p.images[i]}')`;
-      }, 2800);
-      rotators.push(t);
+    const thumbEl = document.getElementById(thumbId);
+    thumbEl.onclick = () => openLightbox(active.code);
+
+    let imgIdx = 0;
+    const t = setInterval(() => {
+      const imgs = active.images;
+      if (!imgs || imgs.length < 2) return;
+      imgIdx = (imgIdx + 1) % imgs.length;
+      thumbEl.style.backgroundImage = `url('${imgs[imgIdx]}')`;
+    }, 2800);
+    rotators.push(t);
+
+    if (hasVariants){
+      variantHandlers[groupId] = function(selectedIndex){
+        activeIdx = parseInt(selectedIndex, 10);
+        active = g.items[activeIdx];
+        imgIdx = 0;
+        document.getElementById(`price-${groupId}`).textContent = `GHS ${priceOf(active)}`;
+        document.getElementById(`wa-${groupId}`).href = waLink(active);
+        document.getElementById(`code-${groupId}`).textContent = active.code;
+        thumbEl.onclick = () => openLightbox(active.code);
+        const img0 = active.images && active.images.length ? active.images[0] : "";
+        thumbEl.style.backgroundImage = img0 ? `url('${img0}')` : "none";
+      };
     }
   });
 }
